@@ -1,0 +1,1441 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мосводоканал - Мониторинг потребления воды</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .anomaly { background-color: #ffebee; }
+        .normal { background-color: #e8f5e8; }
+        .card { margin-bottom: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); border: 1px solid #e0e0e0; }
+        .table-responsive { max-height: 500px; }
+        .status-alert { color: #d32f2f; }
+        .status-ok { color: #388e3c; }
+        .websocket-connected { color: #388e3c; }
+        .websocket-disconnected { color: #d32f2f; }
+        .loading { opacity: 0.6; }
+        .risk-high { background-color: #ffebee !important; }
+        .risk-medium { background-color: #fff3e0 !important; }
+        .risk-low { background-color: #e8f5e8 !important; }
+        .card-header { background-color: #f8f9fa; border-bottom: 1px solid #e0e0e0; font-weight: 600; }
+        .form-label { font-weight: 500; margin-bottom: 0.5rem; }
+        canvas { max-height: 300px; }
+        .table th { font-size: 0.85rem; }
+        .table td { font-size: 0.82rem; }
+        .badge { font-size: 0.75rem; }
+
+        /* Стили для модального окна входа */
+        .modal {
+            backdrop-filter: blur(5px);
+        }
+        .modal-content {
+            border: none;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+    </style>
+</head>
+<body>
+    <!-- Форма входа -->
+    <div id="login-modal" class="modal fade show" style="display: block; background-color: rgba(0,0,0,0.5);" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header bg-primary text-white">
+                    <h5 class="modal-title">
+                        <i class="fas fa-tint"></i> Мосводоканал - Вход в систему
+                    </h5>
+                </div>
+                <div class="modal-body">
+                    <div id="login-alert" class="alert alert-danger d-none"></div>
+                    <form id="login-form">
+                        <div class="mb-3">
+                            <label for="login-username" class="form-label">Логин:</label>
+                            <input type="text" class="form-control" id="login-username" required
+                                   value="admin" placeholder="Введите логин">
+                        </div>
+                        <div class="mb-3">
+                            <label for="login-password" class="form-label">Пароль:</label>
+                            <input type="password" class="form-control" id="login-password" required
+                                   value="admin123" placeholder="Введите пароль">
+                        </div>
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-primary" id="login-btn">
+                                <i class="fas fa-sign-in-alt"></i> Войти в систему
+                            </button>
+                        </div>
+                    </form>
+                    <div class="mt-3 text-center">
+                        <small class="text-muted">
+                            Тестовые пользователи:<br>
+                            admin/admin123 (Администратор)<br>
+                            dispatcher/dispatcher123 (Диспетчер)
+                        </small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Основной контент (изначально скрыт) -->
+    <div id="main-content" style="display: none;">
+        <nav class="navbar navbar-dark bg-primary">
+            <div class="container-fluid">
+                <span class="navbar-brand mb-0 h1">
+                    <i class="fas fa-tint"></i> Мосводоканал - Мониторинг потребления воды
+                </span>
+                <span class="navbar-text">
+                    <span id="user-info" class="me-3"></span>
+                    <button class="btn btn-warning btn-sm" onclick="logout()">
+                        <i class="fas fa-sign-out-alt"></i> Выйти
+                    </button>
+                    &nbsp;|&nbsp;
+                    <span id="websocket-status" class="websocket-disconnected" title="WebSocket отключен">
+                        <i class="fas fa-plug"></i> WebSocket: ❌
+                    </span>
+                    &nbsp;|&nbsp;
+                    Последнее обновление: <span id="update-time">-</span>
+                    &nbsp;|&nbsp;
+                    <button class="btn btn-warning btn-sm" onclick="testConnection()">
+                        <i class="fas fa-bug"></i> Тест подключения
+                    </button>
+                </span>
+            </div>
+        </nav>
+
+        <div class="container-fluid mt-4">
+            <!-- Статистика -->
+            <div class="row mb-4">
+                <div class="col-md-2">
+                    <div class="card bg-primary text-white">
+                        <div class="card-body">
+                            <h5 class="card-title">Всего зданий</h5>
+                            <h2 id="total-buildings">0</h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card bg-success text-white">
+                        <div class="card-body">
+                            <h5 class="card-title">Всего измерений</h5>
+                            <h2 id="total-measurements">0</h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card bg-warning text-white">
+                        <div class="card-body">
+                            <h5 class="card-title">Аномалий</h5>
+                            <h2 id="total-anomalies">0</h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card bg-info text-white">
+                        <div class="card-body">
+                            <h5 class="card-title">% Аномалий</h5>
+                            <h2 id="anomaly-percentage">0%</h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card bg-secondary text-white">
+                        <div class="card-body">
+                            <h5 class="card-title">Нормальные</h5>
+                            <h2 id="normal-count">0</h2>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <div class="card bg-dark text-white">
+                        <div class="card-body">
+                            <h5 class="card-title">Статус системы</h5>
+                            <h2 id="system-status">🟢</h2>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Навигация -->
+            <ul class="nav nav-tabs" id="myTab" role="tablist">
+                <li class="nav-item">
+                    <a class="nav-link active" id="realtime-tab" data-bs-toggle="tab" href="#realtime" role="tab">
+                        <i class="fas fa-bolt"></i> Real-time данные
+                        <span id="realtime-badge" class="badge bg-success">0</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" id="historical-tab" data-bs-toggle="tab" href="#historical" role="tab">
+                        <i class="fas fa-history"></i> Исторические данные
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" id="buildings-tab" data-bs-toggle="tab" href="#buildings" role="tab">
+                        <i class="fas fa-building"></i> Список зданий
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" id="predictions-tab" data-bs-toggle="tab" href="#predictions" role="tab">
+                        <i class="fas fa-chart-line"></i> Прогнозы рисков
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" id="charts-tab" data-bs-toggle="tab" href="#charts" role="tab">
+                        <i class="fas fa-chart-bar"></i> Графики и аналитика
+                    </a>
+                </li>
+            </ul>
+
+            <!-- Содержимое вкладок -->
+            <div class="tab-content" id="myTabContent">
+                <!-- Real-time данные -->
+                <div class="tab-pane fade show active" id="realtime" role="tabpanel">
+                    <div class="mt-3">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h4>Последние измерения в реальном времени</h4>
+                            <div>
+                                <button class="btn btn-outline-primary btn-sm" onclick="clearRealtimeTable()">
+                                    <i class="fas fa-trash"></i> Очистить
+                                </button>
+                                <button class="btn btn-outline-secondary btn-sm" onclick="loadLastRealtimeData()">
+                                    <i class="fas fa-sync"></i> Загрузить последние
+                                </button>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>Адрес</th>
+                                        <th>ХВС (м³)</th>
+                                        <th>ГВС общее (м³)</th>
+                                        <th>ГВС канал 1 (м³)</th>
+                                        <th>ГВС канал 2 (м³)</th>
+                                        <th>Отклонение</th>
+                                        <th>Статус</th>
+                                        <th>Время</th>
+                                        <th>Сценарий</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="realtime-data">
+                                    <tr id="realtime-loading">
+                                        <td colspan="9" class="text-center">
+                                            <div class="spinner-border spinner-border-sm" role="status"></div>
+                                            Ожидание real-time данных...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Исторические данные -->
+                <div class="tab-pane fade" id="historical" role="tabpanel">
+                    <div class="mt-3">
+                        <div class="row mb-3">
+                            <div class="col-md-3">
+                                <button class="btn btn-primary" onclick="loadHistoricalData()" id="historical-btn">
+                                    <i class="fas fa-sync-alt"></i> Обновить исторические данные
+                                </button>
+                            </div>
+                            <div class="col-md-3">
+                                <select class="form-select" id="history-limit" onchange="loadHistoricalData()">
+                                    <option value="50">Последние 50 записей</option>
+                                    <option value="100" selected>Последние 100 записей</option>
+                                    <option value="200">Последние 200 записей</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>Адрес</th>
+                                        <th>ХВС (м³)</th>
+                                        <th>ГВС общее (м³)</th>
+                                        <th>ГВС канал 1 (м³)</th>
+                                        <th>ГВС канал 2 (м³)</th>
+                                        <th>Отклонение</th>
+                                        <th>Статус</th>
+                                        <th>Время</th>
+                                        <th>Сценарий</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="historical-data">
+                                    <tr>
+                                        <td colspan="9" class="text-center">Нажмите "Обновить" для загрузки данных</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Список зданий -->
+                <div class="tab-pane fade" id="buildings" role="tabpanel">
+                    <div class="mt-3">
+                        <button class="btn btn-primary mb-3" onclick="loadBuildings()" id="buildings-btn">
+                            <i class="fas fa-sync-alt"></i> Обновить список зданий
+                        </button>
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>ID здания</th>
+                                        <th>Адрес</th>
+                                        <th>ИТП</th>
+                                        <th>Всего измерений</th>
+                                        <th>Аномалий</th>
+                                        <th>% Аномалий</th>
+                                        <th>Последнее измерение</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="buildings-data">
+                                    <tr>
+                                        <td colspan="7" class="text-center">Нажмите "Обновить" для загрузки данных</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Прогнозы рисков -->
+                <div class="tab-pane fade" id="predictions" role="tabpanel">
+                    <div class="mt-3">
+                        <!-- Сводка по рискам -->
+                        <div class="row mb-4">
+                            <div class="col-md-4">
+                                <div class="card bg-danger text-white">
+                                    <div class="card-body">
+                                        <h5 class="card-title">Высокий риск</h5>
+                                        <h2 id="high-risk-count">0</h2>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card bg-warning text-white">
+                                    <div class="card-body">
+                                        <h5 class="card-title">Средний риск</h5>
+                                        <h2 id="medium-risk-count">0</h2>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card bg-success text-white">
+                                    <div class="card-body">
+                                        <h5 class="card-title">Низкий риск</h5>
+                                        <h2 id="low-risk-count">0</h2>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Детальные прогнозы -->
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <button class="btn btn-primary" onclick="loadPredictions()" id="predictions-btn">
+                                    <i class="fas fa-sync-alt"></i> Обновить прогнозы
+                                </button>
+                                <button class="btn btn-outline-info btn-sm" onclick="trainModel()">
+                                    <i class="fas fa-brain"></i> Обучить модель
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>Адрес</th>
+                                        <th>ИТП</th>
+                                        <th>Уровень риска</th>
+                                        <th>Вероятность</th>
+                                        <th>ХВС (м³)</th>
+                                        <th>ГВС (м³)</th>
+                                        <th>Отклонение</th>
+                                        <th>Последнее измерение</th>
+                                        <th>Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="predictions-data">
+                                    <tr>
+                                        <td colspan="9" class="text-center">Нажмите "Обновить прогнозы" для загрузки данных</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Графики и аналитика -->
+                <div class="tab-pane fade" id="charts" role="tabpanel">
+                    <div class="mt-3">
+                        <!-- Фильтры -->
+                        <div class="row mb-4">
+                            <div class="col-md-3">
+                                <label for="building-select" class="form-label">Выберите здание:</label>
+                                <select class="form-select" id="building-select" onchange="loadCharts()">
+                                    <option value="all">Все здания</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label for="period-select" class="form-label">Период:</label>
+                                <select class="form-select" id="period-select" onchange="loadCharts()">
+                                    <option value="7">Последние 7 дней</option>
+                                    <option value="30" selected>Последние 30 дней</option>
+                                    <option value="90">Последние 90 дней</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">&nbsp;</label>
+                                <button class="btn btn-primary w-100" onclick="loadCharts()">
+                                    <i class="fas fa-sync-alt"></i> Обновить графики
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Графики -->
+                        <div class="row">
+                            <!-- Потребление по типам -->
+                            <div class="col-md-6 mb-4">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h5>📊 Потребление ХВС и ГВС</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <canvas id="consumptionChart" width="400" height="200"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Распределение аномалий -->
+                            <div class="col-md-6 mb-4">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h5>🚨 Распределение аномалий</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <canvas id="anomalyChart" width="400" height="200"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Тренд потребления -->
+                            <div class="col-md-12 mb-4">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h5>📈 Тренд потребления по дням</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <canvas id="trendChart" width="400" height="150"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Риски по зданиям -->
+                            <div class="col-md-6 mb-4">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h5>🎯 Уровень риска по зданиям</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <canvas id="riskChart" width="400" height="200"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Статистика по времени суток -->
+                            <div class="col-md-6 mb-4">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h5>⏰ Потребление по времени суток</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <canvas id="hourlyChart" width="400" height="200"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script>
+        // Глобальные переменные для аутентификации
+        let currentUser = null;
+        let authToken = null;
+        let socket = null;
+        let realtimeMessageCount = 0;
+        let pollingInterval = null;
+
+        // Глобальные переменные для графиков
+        let consumptionChart = null;
+        let anomalyChart = null;
+        let trendChart = null;
+        let riskChart = null;
+        let hourlyChart = null;
+
+        // ==================== АУТЕНТИФИКАЦИЯ ====================
+
+        // Функция входа в систему
+        async function login(username, password) {
+            const loginBtn = document.getElementById('login-btn');
+            const originalText = loginBtn.innerHTML;
+
+            try {
+                loginBtn.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Вход...';
+                loginBtn.disabled = true;
+
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, password }),
+                    credentials: 'include'
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    currentUser = data.user;
+                    showMainContent();
+                    hideLoginModal();
+                    updateUserInfo();
+                    initializeApplication();
+                    console.log('✅ Успешный вход:', currentUser.username);
+                } else {
+                    showLoginError(data.error || 'Ошибка входа');
+                }
+            } catch (error) {
+                console.error('❌ Ошибка входа:', error);
+                showLoginError('Ошибка соединения с сервером');
+            } finally {
+                loginBtn.innerHTML = originalText;
+                loginBtn.disabled = false;
+            }
+        }
+
+        // Функция выхода
+        async function logout() {
+            try {
+                await fetch('/api/auth/logout', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+            } catch (error) {
+                console.error('Ошибка выхода:', error);
+            } finally {
+                currentUser = null;
+                showLoginModal();
+                hideMainContent();
+                console.log('✅ Выход из системы');
+            }
+        }
+
+        // Проверка аутентификации при загрузке
+        async function checkAuth() {
+            try {
+                const response = await fetch('/api/auth/me', {
+                    credentials: 'include'
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    currentUser = data.user;
+                    showMainContent();
+                    hideLoginModal();
+                    updateUserInfo();
+                    initializeApplication();
+                } else {
+                    showLoginModal();
+                }
+            } catch (error) {
+                console.error('❌ Ошибка проверки аутентификации:', error);
+                showLoginModal();
+            }
+        }
+
+        // Показать/скрыть элементы интерфейса
+        function showLoginModal() {
+            document.getElementById('login-modal').style.display = 'block';
+            document.getElementById('main-content').style.display = 'none';
+        }
+
+        function hideLoginModal() {
+            document.getElementById('login-modal').style.display = 'none';
+        }
+
+        function showMainContent() {
+            document.getElementById('main-content').style.display = 'block';
+        }
+
+        function hideMainContent() {
+            document.getElementById('main-content').style.display = 'none';
+        }
+
+        function showLoginError(message) {
+            const alert = document.getElementById('login-alert');
+            alert.textContent = message;
+            alert.classList.remove('d-none');
+        }
+
+        function hideLoginError() {
+            const alert = document.getElementById('login-alert');
+            alert.classList.add('d-none');
+        }
+
+        function updateUserInfo() {
+            const userInfo = document.getElementById('user-info');
+            if (currentUser) {
+                userInfo.innerHTML = `<i class="fas fa-user"></i> ${currentUser.username} (${currentUser.role})`;
+            }
+        }
+
+        // Обработчик формы входа
+        document.getElementById('login-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            hideLoginError();
+
+            const username = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+
+            login(username, password);
+        });
+
+        // Обернем все существующие функции для проверки аутентификации
+        function initializeApplication() {
+            if (!currentUser) return;
+
+            console.log('🚀 Инициализация приложения для пользователя:', currentUser.username);
+
+            // Инициализируем WebSocket
+            initializeWebSocket();
+
+            // Загружаем начальные данные
+            updateStats();
+            loadHistoricalData();
+            loadBuildings();
+            loadRiskSummary();
+            loadPredictions();
+            loadBuildingOptions();
+
+            // Обновляем статистику каждые 10 секунд
+            setInterval(updateStats, 10000);
+            setInterval(loadRiskSummary, 30000);
+
+            // Загружаем графики при первом открытии
+            setTimeout(() => {
+                loadCharts();
+            }, 1000);
+
+            // Обновляем графики при переключении на вкладку
+            const chartsTab = document.getElementById('charts-tab');
+            if (chartsTab) {
+                chartsTab.addEventListener('shown.bs.tab', function() {
+                    loadCharts();
+                });
+            }
+
+            // Автоматическое обновление графиков каждые 2 минуты
+            setInterval(() => {
+                const chartsTab = document.getElementById('charts-tab');
+                if (chartsTab && chartsTab.classList.contains('active')) {
+                    loadCharts();
+                }
+            }, 120000);
+
+            console.log('✅ Приложение инициализировано для', currentUser.username);
+        }
+
+        // Перехватчик fetch для автоматической аутентификации
+        const originalFetch = window.fetch;
+        window.fetch = function(...args) {
+            const options = args[1] || {};
+            options.credentials = 'include';
+            args[1] = options;
+
+            return originalFetch.apply(this, args).then(response => {
+                if (response.status === 401) {
+                    // Не авторизован - показываем форму входа
+                    showLoginModal();
+                    hideMainContent();
+                    throw new Error('Требуется аутентификация');
+                }
+                return response;
+            });
+        };
+
+        // ==================== СУЩЕСТВУЮЩИЙ ФУНКЦИОНАЛ ====================
+
+        // Инициализация WebSocket
+        function initializeWebSocket() {
+            console.log('🔌 Инициализация WebSocket подключения...');
+
+            socket = io({
+                transports: ['websocket', 'polling'],
+                timeout: 10000
+            });
+
+            // Обработчики событий WebSocket
+            socket.on('connect', function() {
+                console.log('✅ Успешно подключен к WebSocket');
+                updateWebSocketStatus(true);
+                document.getElementById('system-status').innerHTML = '🟢 WebSocket';
+            });
+
+            socket.on('disconnect', function(reason) {
+                console.log('❌ Отключен от WebSocket:', reason);
+                updateWebSocketStatus(false);
+                document.getElementById('system-status').innerHTML = '🔴 WebSocket';
+
+                // Попытка переподключения через 5 секунд
+                setTimeout(initializeWebSocket, 5000);
+            });
+
+            socket.on('connect_error', function(error) {
+                console.log('❌ Ошибка подключения WebSocket:', error);
+                updateWebSocketStatus(false);
+
+                // Если WebSocket не работает, запускаем polling
+                if (!pollingInterval) {
+                    startPolling();
+                }
+            });
+
+            // Обработка реальных данных через WebSocket
+            socket.on('new_measurement', function(data) {
+                console.log('📨 Получены real-time данные:', data);
+                realtimeMessageCount++;
+                updateRealtimeBadge();
+                updateRealtimeTable(data);
+                updateStats();
+            });
+        }
+
+        // Обновление статуса WebSocket
+        function updateWebSocketStatus(connected) {
+            const statusElement = document.getElementById('websocket-status');
+            if (connected) {
+                statusElement.className = 'websocket-connected';
+                statusElement.innerHTML = '<i class="fas fa-plug"></i> WebSocket: ✅';
+                statusElement.title = 'WebSocket подключен';
+            } else {
+                statusElement.className = 'websocket-disconnected';
+                statusElement.innerHTML = '<i class="fas fa-plug"></i> WebSocket: ❌';
+                statusElement.title = 'WebSocket отключен';
+            }
+        }
+
+        // Запуск polling как fallback
+        function startPolling() {
+            console.log('🔄 Запуск polling как fallback...');
+            pollingInterval = setInterval(() => {
+                fetch('/api/historical?limit=5')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data && data.length > 0) {
+                            // Берем только самую свежую запись
+                            const latest = data[0];
+                            updateRealtimeTable(latest);
+                            updateStats();
+                        }
+                    })
+                    .catch(error => {
+                        console.error('❌ Ошибка polling:', error);
+                    });
+            }, 5000); // Каждые 5 секунд
+        }
+
+        // Обновление бейджа real-time
+        function updateRealtimeBadge() {
+            const badge = document.getElementById('realtime-badge');
+            badge.textContent = realtimeMessageCount;
+        }
+
+        // Загрузка статистики
+        function updateStats() {
+            fetch('/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('total-buildings').textContent = data.total_buildings;
+                    document.getElementById('total-measurements').textContent = data.total_measurements;
+                    document.getElementById('total-anomalies').textContent = data.anomalies;
+                    document.getElementById('normal-count').textContent = data.normal;
+                    document.getElementById('anomaly-percentage').textContent = data.anomaly_percentage + '%';
+                    document.getElementById('update-time').textContent = new Date().toLocaleTimeString();
+
+                    // Обновляем статус системы
+                    const statusElement = document.getElementById('system-status');
+                    if (data.anomaly_percentage > 20) {
+                        statusElement.innerHTML = '🔴';
+                        statusElement.title = 'Высокий уровень аномалий';
+                    } else if (data.anomaly_percentage > 10) {
+                        statusElement.innerHTML = '🟡';
+                        statusElement.title = 'Средний уровень аномалий';
+                    } else {
+                        statusElement.innerHTML = '🟢';
+                        statusElement.title = 'Низкий уровень аномалий';
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка загрузки статистики:', error);
+                });
+        }
+
+        // Обновление таблицы реального времени с новой структурой
+        function updateRealtimeTable(data) {
+            const tbody = document.getElementById('realtime-data');
+            const loadingRow = document.getElementById('realtime-loading');
+
+            // Убираем строку загрузки при первом сообщении
+            if (loadingRow && tbody.contains(loadingRow)) {
+                tbody.removeChild(loadingRow);
+            }
+
+            const newRow = document.createElement('tr');
+
+            if (data.status.includes('🚨')) {
+                newRow.className = 'anomaly';
+            } else {
+                newRow.className = 'normal';
+            }
+
+            // ОБНОВЛЕНО: Поддержка двух каналов ГВС
+            newRow.innerHTML = `
+                <td>${data.address}</td>
+                <td>${data.cold_water.toFixed(3)}</td>
+                <td>${data.hot_water.toFixed(3)}</td>
+                <td>${data.gvs_flow1 ? data.gvs_flow1.toFixed(3) : 'N/A'}</td>
+                <td>${data.gvs_flow2 ? data.gvs_flow2.toFixed(3) : 'N/A'}</td>
+                <td>${data.deviation.toFixed(2)}%</td>
+                <td class="${data.status.includes('🚨') ? 'status-alert' : 'status-ok'}">${data.status}</td>
+                <td>${new Date(data.timestamp).toLocaleString()}</td>
+                <td>${data.scenario}</td>
+            `;
+
+            // Добавляем новую строку в начало
+            tbody.insertBefore(newRow, tbody.firstChild);
+
+            // Ограничиваем количество строк (последние 20)
+            if (tbody.children.length > 20) {
+                tbody.removeChild(tbody.lastChild);
+            }
+        }
+
+        // Очистка таблицы real-time
+        function clearRealtimeTable() {
+            const tbody = document.getElementById('realtime-data');
+            tbody.innerHTML = '';
+            realtimeMessageCount = 0;
+            updateRealtimeBadge();
+
+            // Добавляем обратно строку загрузки
+            const loadingRow = document.createElement('tr');
+            loadingRow.id = 'realtime-loading';
+            loadingRow.innerHTML = `
+                <td colspan="9" class="text-center">
+                    <div class="spinner-border spinner-border-sm" role="status"></div>
+                    Ожидание real-time данных...
+                </td>
+            `;
+            tbody.appendChild(loadingRow);
+        }
+
+        // Загрузка последних real-time данных
+        function loadLastRealtimeData() {
+            fetch('/api/historical?limit=10')
+                .then(response => response.json())
+                .then(data => {
+                    const tbody = document.getElementById('realtime-data');
+                    const loadingRow = document.getElementById('realtime-loading');
+
+                    if (loadingRow && tbody.contains(loadingRow)) {
+                        tbody.removeChild(loadingRow);
+                    }
+
+                    // Очищаем и добавляем последние 10 записей
+                    tbody.innerHTML = '';
+                    data.reverse().forEach(item => {
+                        const row = document.createElement('tr');
+                        if (item.status.includes('🚨')) {
+                            row.className = 'anomaly';
+                        } else {
+                            row.className = 'normal';
+                        }
+
+                        // ОБНОВЛЕНО: Поддержка двух каналов ГВС
+                        row.innerHTML = `
+                            <td>${item.address}</td>
+                            <td>${item.cold_water.toFixed(3)}</td>
+                            <td>${item.hot_water.toFixed(3)}</td>
+                            <td>${item.gvs_flow1 ? item.gvs_flow1.toFixed(3) : 'N/A'}</td>
+                            <td>${item.gvs_flow2 ? item.gvs_flow2.toFixed(3) : 'N/A'}</td>
+                            <td>${item.deviation.toFixed(2)}%</td>
+                            <td class="${item.status.includes('🚨') ? 'status-alert' : 'status-ok'}">${item.status}</td>
+                            <td>${new Date(item.timestamp).toLocaleString()}</td>
+                            <td>${item.scenario}</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка загрузки последних данных:', error);
+                    alert('Ошибка загрузки данных: ' + error.message);
+                });
+        }
+
+        // Загрузка исторических данных с новой структурой
+        function loadHistoricalData() {
+            const button = document.getElementById('historical-btn');
+            const originalText = button.innerHTML;
+
+            button.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Загрузка...';
+            button.disabled = true;
+
+            const limit = document.getElementById('history-limit').value;
+            fetch(`/api/historical?limit=${limit}`)
+                .then(response => response.json())
+                .then(data => {
+                    const tbody = document.getElementById('historical-data');
+                    tbody.innerHTML = '';
+
+                    data.forEach(item => {
+                        const row = document.createElement('tr');
+                        if (item.status.includes('🚨')) {
+                            row.className = 'anomaly';
+                        }
+
+                        // ОБНОВЛЕНО: Поддержка двух каналов ГВС
+                        row.innerHTML = `
+                            <td>${item.address}</td>
+                            <td>${item.cold_water.toFixed(3)}</td>
+                            <td>${item.hot_water.toFixed(3)}</td>
+                            <td>${item.gvs_flow1 ? item.gvs_flow1.toFixed(3) : 'N/A'}</td>
+                            <td>${item.gvs_flow2 ? item.gvs_flow2.toFixed(3) : 'N/A'}</td>
+                            <td>${item.deviation.toFixed(2)}%</td>
+                            <td class="${item.status.includes('🚨') ? 'status-alert' : 'status-ok'}">${item.status}</td>
+                            <td>${new Date(item.timestamp).toLocaleString()}</td>
+                            <td>${item.scenario}</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка загрузки исторических данных:', error);
+                    alert('Ошибка загрузки исторических данных: ' + error.message);
+                })
+                .finally(() => {
+                    button.innerHTML = originalText;
+                    button.disabled = false;
+                });
+        }
+
+        // Загрузка списка зданий с ИТП
+        function loadBuildings() {
+            const button = document.getElementById('buildings-btn');
+            const originalText = button.innerHTML;
+
+            button.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Загрузка...';
+            button.disabled = true;
+
+            fetch('/api/buildings')
+                .then(response => response.json())
+                .then(data => {
+                    const tbody = document.getElementById('buildings-data');
+                    tbody.innerHTML = '';
+
+                    data.forEach(building => {
+                        const row = document.createElement('tr');
+                        // ОБНОВЛЕНО: Добавлен ИТП
+                        row.innerHTML = `
+                            <td>${building.building_id}</td>
+                            <td>${building.address}</td>
+                            <td>${building.itp_id || 'N/A'}</td>
+                            <td>${building.total_measurements}</td>
+                            <td>${building.anomaly_count}</td>
+                            <td>${building.anomaly_percentage}%</td>
+                            <td>${building.last_measurement ? new Date(building.last_measurement).toLocaleString() : 'Нет данных'}</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка получения списка зданий:', error);
+                    alert('Ошибка загрузки списка зданий: ' + error.message);
+                })
+                .finally(() => {
+                    button.innerHTML = originalText;
+                    button.disabled = false;
+                });
+        }
+
+        // Загрузка сводки по рискам
+        function loadRiskSummary() {
+            fetch('/api/risk_summary')
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.error) {
+                        document.getElementById('high-risk-count').textContent = data.high_risk_buildings;
+                        document.getElementById('medium-risk-count').textContent = data.medium_risk_buildings;
+                        document.getElementById('low-risk-count').textContent = data.low_risk_buildings;
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка загрузки сводки рисков:', error);
+                    // Если endpoint не существует, показываем заглушки
+                    document.getElementById('high-risk-count').textContent = 'N/A';
+                    document.getElementById('medium-risk-count').textContent = 'N/A';
+                    document.getElementById('low-risk-count').textContent = 'N/A';
+                });
+        }
+
+        // Загрузка детальных прогнозов с ИТП
+        function loadPredictions() {
+            const button = document.getElementById('predictions-btn');
+            const originalText = button.innerHTML;
+
+            button.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Загрузка...';
+            button.disabled = true;
+
+            fetch('/api/predictions')
+                .then(response => response.json())
+                .then(data => {
+                    const tbody = document.getElementById('predictions-data');
+                    tbody.innerHTML = '';
+
+                    if (data.error) {
+                        tbody.innerHTML = `<tr><td colspan="9" class="text-center">Ошибка: ${data.error}</td></tr>`;
+                        return;
+                    }
+
+                    if (data.predictions && data.predictions.length > 0) {
+                        data.predictions.forEach(prediction => {
+                            const row = document.createElement('tr');
+
+                            // Раскрашиваем строку в зависимости от уровня риска
+                            if (prediction.risk_level === 'высокий') {
+                                row.className = 'risk-high';
+                            } else if (prediction.risk_level === 'средний') {
+                                row.className = 'risk-medium';
+                            } else {
+                                row.className = 'risk-low';
+                            }
+
+                            // ОБНОВЛЕНО: Добавлен ИТП
+                            row.innerHTML = `
+                                <td>${prediction.address}</td>
+                                <td>${prediction.itp_id || 'N/A'}</td>
+                                <td>
+                                    <span class="badge ${prediction.risk_level === 'высокий' ? 'bg-danger' : prediction.risk_level === 'средний' ? 'bg-warning' : 'bg-success'}">
+                                        ${prediction.risk_level}
+                                    </span>
+                                </td>
+                                <td>${(prediction.risk_score * 100).toFixed(1)}%</td>
+                                <td>${prediction.hvs_value ? prediction.hvs_value.toFixed(3) : 'N/A'}</td>
+                                <td>${prediction.gvs_value ? prediction.gvs_value.toFixed(3) : 'N/A'}</td>
+                                <td>${prediction.deviation ? prediction.deviation.toFixed(2) + '%' : 'N/A'}</td>
+                                <td>${prediction.last_measurement ? new Date(prediction.last_measurement).toLocaleString() : 'Нет данных'}</td>
+                                <td>
+                                    <button class="btn btn-sm btn-info" onclick="getDetailedPrediction('${prediction.building_id}')">
+                                        <i class="fas fa-search"></i> Детали
+                                    </button>
+                                </td>
+                            `;
+                            tbody.appendChild(row);
+                        });
+                    } else {
+                        tbody.innerHTML = `<tr><td colspan="9" class="text-center">Нет данных для прогноза</td></tr>`;
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка загрузки прогнозов:', error);
+                    const tbody = document.getElementById('predictions-data');
+                    tbody.innerHTML = `<tr><td colspan="9" class="text-center">Ошибка загрузки прогнозов: ${error.message}</td></tr>`;
+                })
+                .finally(() => {
+                    button.innerHTML = originalText;
+                    button.disabled = false;
+                });
+        }
+
+        // Детальный прогноз для здания
+        function getDetailedPrediction(buildingId) {
+            fetch(`/api/predictions/${buildingId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Ошибка: ' + data.error);
+                        return;
+                    }
+
+                    let message = `🏢 Здание: ${data.building_id}\n`;
+                    message += `📊 Уровень риска: ${data.risk_level}\n`;
+                    message += `🎯 Вероятность: ${(data.risk_score * 100).toFixed(1)}%\n`;
+                    message += `💡 Рекомендация: ${data.recommendation}\n`;
+                    message += `⏰ Время прогноза: ${new Date(data.timestamp).toLocaleString()}`;
+
+                    alert(message);
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка получения детального прогноза:', error);
+                    alert('Ошибка получения детального прогноза');
+                });
+        }
+
+        // Обучение модели
+        function trainModel() {
+            fetch('/api/train_model')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        alert('✅ ' + data.message);
+                        // Перезагружаем прогнозы после обучения
+                        setTimeout(loadPredictions, 2000);
+                    } else {
+                        alert('❌ ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка обучения модели:', error);
+                    alert('Ошибка обучения модели: ' + error.message);
+                });
+        }
+
+        // Загрузка графиков
+        function loadCharts() {
+            const buildingId = document.getElementById('building-select').value;
+            const period = document.getElementById('period-select').value;
+
+            loadConsumptionChart(buildingId, period);
+            loadTrendChart(buildingId, period);
+            loadRiskChart();
+            loadHourlyChart(buildingId, period);
+        }
+
+        // График потребления
+        function loadConsumptionChart(buildingId, period) {
+            fetch(`/api/charts/consumption?building_id=${buildingId}&period=${period}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.error('Ошибка загрузки данных потребления:', data.error);
+                        return;
+                    }
+
+                    const ctx = document.getElementById('consumptionChart').getContext('2d');
+
+                    if (consumptionChart) {
+                        consumptionChart.destroy();
+                    }
+
+                    consumptionChart = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: ['Холодная вода (ХВС)', 'Горячая вода (ГВС)'],
+                            datasets: [{
+                                data: [data.consumption.hvs, data.consumption.gvs],
+                                backgroundColor: ['#36a2eb', '#ff6384'],
+                                borderWidth: 2
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: {
+                                    position: 'bottom'
+                                },
+                                title: {
+                                    display: true,
+                                    text: `Общее потребление: ${(data.consumption.hvs + data.consumption.gvs).toFixed(1)} м³`
+                                }
+                            }
+                        }
+                    });
+
+                    // Также обновляем график аномалий
+                    updateAnomalyChart(data.anomalies);
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка загрузки графика потребления:', error);
+                });
+        }
+
+        // График аномалий
+        function updateAnomalyChart(anomalyData) {
+            const ctx = document.getElementById('anomalyChart').getContext('2d');
+
+            if (anomalyChart) {
+                anomalyChart.destroy();
+            }
+
+            const anomalyPercentage = (anomalyData.anomalies / anomalyData.total * 100).toFixed(1);
+
+            anomalyChart = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: ['Нормальные измерения', 'Аномалии'],
+                    datasets: [{
+                        data: [anomalyData.normal, anomalyData.anomalies],
+                        backgroundColor: ['#4caf50', '#f44336'],
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        },
+                        title: {
+                            display: true,
+                            text: `Аномалий: ${anomalyPercentage}%`
+                        }
+                    }
+                }
+            });
+        }
+
+        // График тренда
+        function loadTrendChart(buildingId, period) {
+            fetch(`/api/charts/trend?building_id=${buildingId}&period=${period}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.error('Ошибка загрузки трендовых данных:', data.error);
+                        return;
+                    }
+
+                    const ctx = document.getElementById('trendChart').getContext('2d');
+                    const dates = data.daily_data.map(item => item.date);
+                    const hvsData = data.daily_data.map(item => item.hvs);
+                    const gvsData = data.daily_data.map(item => item.gvs);
+
+                    if (trendChart) {
+                        trendChart.destroy();
+                    }
+
+                    trendChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: dates,
+                            datasets: [
+                                {
+                                    label: 'ХВС',
+                                    data: hvsData,
+                                    borderColor: '#36a2eb',
+                                    backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                                    tension: 0.4,
+                                    fill: true
+                                },
+                                {
+                                    label: 'ГВС',
+                                    data: gvsData,
+                                    borderColor: '#ff6384',
+                                    backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                                    tension: 0.4,
+                                    fill: true
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: {
+                                    position: 'top'
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: 'Потребление (м³)'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка загрузки графика тренда:', error);
+                });
+        }
+
+        // График рисков
+        function loadRiskChart() {
+            fetch('/api/charts/risks')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.error('Ошибка загрузки данных рисков:', data.error);
+                        return;
+                    }
+
+                    const ctx = document.getElementById('riskChart').getContext('2d');
+                    const addresses = data.risk_data.map(item => item.address);
+                    const risks = data.risk_data.map(item => item.risk_score);
+                    const colors = data.risk_data.map(item =>
+                        item.risk_category === 'высокий' ? '#f44336' :
+                        item.risk_category === 'средний' ? '#ff9800' : '#4caf50'
+                    );
+
+                    if (riskChart) {
+                        riskChart.destroy();
+                    }
+
+                    riskChart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: addresses,
+                            datasets: [{
+                                label: 'Уровень риска (%)',
+                                data: risks,
+                                backgroundColor: colors,
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    max: 100,
+                                    title: {
+                                        display: true,
+                                        text: 'Уровень риска (%)'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка загрузки графика рисков:', error);
+                });
+        }
+
+        // График по времени суток
+        function loadHourlyChart(buildingId, period) {
+            // Временная реализация - можно расширить с реальными данными
+            const ctx = document.getElementById('hourlyChart').getContext('2d');
+            const hours = Array.from({length: 24}, (_, i) => i);
+            const mockData = hours.map(hour =>
+                Math.sin(hour * Math.PI / 12) * 50 + 50 + Math.random() * 20
+            );
+
+            if (hourlyChart) {
+                hourlyChart.destroy();
+            }
+
+            hourlyChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: hours.map(h => h + ':00'),
+                    datasets: [{
+                        label: 'Среднее потребление',
+                        data: mockData,
+                        borderColor: '#9c27b0',
+                        backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'top'
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Потребление (%)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Загрузка списка зданий для фильтра
+        function loadBuildingOptions() {
+            fetch('/api/charts/buildings')
+                .then(response => response.json())
+                .then(data => {
+                    const select = document.getElementById('building-select');
+                    select.innerHTML = '';
+
+                    if (data.buildings) {
+                        data.buildings.forEach(building => {
+                            const option = document.createElement('option');
+                            option.value = building.id;
+                            option.textContent = building.address;
+                            select.appendChild(option);
+                        });
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ Ошибка загрузки списка зданий:', error);
+                });
+        }
+
+        // Тест подключения
+        function testConnection() {
+            const tests = [
+                fetch('/health').then(r => r.json()),
+                fetch('/api/stats').then(r => r.json()),
+                fetch('/api/historical?limit=1').then(r => r.json())
+            ];
+
+            Promise.all(tests)
+                .then(results => {
+                    const health = results[0];
+                    const stats = results[1];
+                    const historical = results[2];
+
+                    let message = `✅ Система работает:\n`;
+                    message += `- Health: ${health.status}\n`;
+                    message += `- Kafka: ${health.kafka_connected ? '✅' : '❌'}\n`;
+                    message += `- База данных: ${health.database_connected ? '✅' : '❌'}\n`;
+                    message += `- Redis: ${health.redis_connected ? '✅' : '❌'}\n`;
+                    message += `- Всего измерений: ${stats.total_measurements}\n`;
+                    message += `- WebSocket: ${socket && socket.connected ? '✅' : '❌'}\n`;
+                    message += `- Получено сообщений: ${realtimeMessageCount}`;
+
+                    alert(message);
+                })
+                .catch(error => {
+                    alert('❌ Ошибка тестирования: ' + error.message);
+                });
+        }
+
+        // ==================== ИНИЦИАЛИЗАЦИЯ ====================
+
+        // Инициализация при загрузке страницы
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('🚀 Загрузка приложения...');
+
+            // Сначала проверяем аутентификацию
+            checkAuth();
+        });
+    </script>
+</body>
+</html>
